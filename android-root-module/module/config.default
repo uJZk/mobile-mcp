@@ -5,3 +5,7 @@
 # token has full root control of the device; bind to a specific interface
 # (e.g. a VPN address) if your network is not trusted.
 LISTEN=0.0.0.0:8765
+
+# Connections from the phone itself (127.0.0.1 or the phone's own IPs) are
+# dropped so apps on the device cannot reach the agent. Set to 1 to allow them.
+ALLOW_LOCAL=0

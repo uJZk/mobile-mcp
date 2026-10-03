@@ -53,7 +53,10 @@ Set these on the machine that runs mobile-mcp:
 
 ```sh
 LISTEN=0.0.0.0:8765
+ALLOW_LOCAL=0
 ```
+
+- `ALLOW_LOCAL=0` (default) drops connections that come from the phone itself, i.e. from `127.0.0.1` / `::1` or any of the phone's own interface addresses, so apps on the device cannot talk to the agent. Set it to `1` to allow them (for example to test with `curl` in Termux).
 
 Reboot, or disable and re-enable the module, after changing it. The agent logs to `/data/adb/mobile-mcp/agent.log`.
 
@@ -71,6 +74,7 @@ Anyone who can reach the port **and** knows the token gets root-level control of
 
 - Traffic is plain HTTP. Use it only on a network you trust, or bind `LISTEN` to a VPN address (e.g. Tailscale / WireGuard), or tunnel it.
 - The token is 48 random hex characters, generated on first start and compared in constant time. To rotate it, delete `/data/adb/mobile-mcp/token` and reboot.
+- Connections from the device itself are dropped at accept time, before any HTTP is read (see `ALLOW_LOCAL`).
 - The agent only exposes fixed operations. Every parameter is validated and passed as a separate argv entry to the system tool, never through a shell, so there is no generic command execution endpoint.
 
 ## HTTP API

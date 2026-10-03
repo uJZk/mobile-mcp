@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"
@@ -168,3 +170,57 @@ func TestLoadOrCreateToken(t *testing.T) {
 		t.Fatalf("unexpected token permissions %v", st.Mode())
 	}
 }
+
+func TestLocalFilterListenerDropsLocalSources(t *testing.T) {
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inner.Close()
+
+	l := &localFilterListener{Listener: inner, localAddrs: net.InterfaceAddrs}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})}
+	go func() { _ = srv.Serve(l) }()
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("http://" + inner.Addr().String() + "/v1/info")
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("expected loopback connection to be dropped, got status %d", resp.StatusCode)
+	}
+}
+
+func TestLocalFilterListenerIsLocal(t *testing.T) {
+	own := []net.Addr{
+		&net.IPNet{IP: net.ParseIP("192.168.1.20"), Mask: net.CIDRMask(24, 32)},
+		&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)},
+		&net.IPAddr{IP: net.ParseIP("100.64.0.5")},
+	}
+	l := &localFilterListener{localAddrs: func() ([]net.Addr, error) { return own, nil }}
+
+	cases := map[string]bool{
+		"127.0.0.1:5000":           true,
+		"127.0.0.2:5000":           true,
+		"[::1]:5000":               true,
+		"[::ffff:127.0.0.1]:5000":  true,
+		"192.168.1.20:5000":        true,
+		"[::ffff:192.168.1.20]:80": true,
+		"[fe80::1%wlan0]:5000":     true,
+		"100.64.0.5:5000":          true,
+		"192.168.1.21:5000":        false,
+		"10.0.0.7:5000":            false,
+		"[2001:db8::1]:5000":       false,
+	}
+	for addr, want := range cases {
+		remote := fakeAddr(addr)
+		if got := l.isLocal(remote); got != want {
+			t.Errorf("isLocal(%s) = %t, want %t", addr, got, want)
+		}
+	}
+}
+
+type fakeAddr string
+
+func (a fakeAddr) Network() string { return "tcp" }
+func (a fakeAddr) String() string  { return string(a) }

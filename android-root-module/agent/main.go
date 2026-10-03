@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -614,9 +616,65 @@ func loadOrCreateToken(path string) (string, error) {
 	return token, nil
 }
 
+// localFilterListener drops connections whose source is the device itself
+// (loopback or one of its own interface addresses) before any HTTP is read,
+// so apps running on the phone cannot reach the root agent.
+type localFilterListener struct {
+	net.Listener
+	// localAddrs returns the device's own addresses; it is called per
+	// connection because interface addresses change (Wi-Fi, VPN, mobile data).
+	localAddrs func() ([]net.Addr, error)
+}
+
+func (l *localFilterListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		if l.isLocal(c.RemoteAddr()) {
+			log.Printf("dropped connection from local address %s", c.RemoteAddr())
+			_ = c.Close()
+			continue
+		}
+		return c, nil
+	}
+}
+
+func (l *localFilterListener) isLocal(remote net.Addr) bool {
+	ap, err := netip.ParseAddrPort(remote.String())
+	if err != nil {
+		// unknown address format: refuse rather than risk letting a local app in
+		return true
+	}
+	ip := ap.Addr().Unmap().WithZone("")
+	if ip.IsLoopback() || ip.IsUnspecified() {
+		return true
+	}
+	addrs, err := l.localAddrs()
+	if err != nil {
+		log.Printf("listing interface addresses: %v", err)
+		return true
+	}
+	for _, a := range addrs {
+		var candidate net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			candidate = v.IP
+		case *net.IPAddr:
+			candidate = v.IP
+		}
+		if own, found := netip.AddrFromSlice(candidate); found && own.Unmap() == ip {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	listen := flag.String("listen", "0.0.0.0:8765", "address to listen on")
 	tokenFile := flag.String("token-file", "/data/adb/mobile-mcp/token", "file holding the bearer token (created if missing)")
+	allowLocal := flag.Bool("allow-local", false, "accept connections from the device itself (loopback and its own IPs)")
 	printToken := flag.Bool("print-token", false, "print the token (creating it if needed) and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -646,6 +704,14 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("mobile-mcp-agent %s listening on %s", version, *listen)
-	log.Fatal(srv.ListenAndServe())
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+	if !*allowLocal {
+		ln = &localFilterListener{Listener: ln, localAddrs: net.InterfaceAddrs}
+	}
+
+	log.Printf("mobile-mcp-agent %s listening on %s (allow local: %t)", version, *listen, *allowLocal)
+	log.Fatal(srv.Serve(ln))
 }
