@@ -18,6 +18,6 @@ export PATH=/system/bin:/system/xbin:/vendor/bin:$PATH
 while [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ]; do
   # keep the log from growing without bound
   [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -gt 1048576 ] && mv -f "$LOG" "$LOG.1"
-  "$MODDIR/bin/mobile-mcp-agent" -listen "$LISTEN" -allow-local="$([ "$ALLOW_LOCAL" = "1" ] && echo true || echo false)" -token-file "$DATA_DIR/token" >> "$LOG" 2>&1
+  "$MODDIR/bin/mobile-mcp-agent" -listen "$LISTEN" -allow-local="$([ "$ALLOW_LOCAL" = "1" ] && echo true || echo false)" -token-file "$DATA_DIR/token" -input-server "$MODDIR/lib/input-server.jar" >> "$LOG" 2>&1
   sleep 5
 done

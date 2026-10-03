@@ -11,6 +11,7 @@ esac
 ui_print "- Installing agent for $ARCH"
 mv "$MODPATH/bin/mobile-mcp-agent-$ARCH" "$MODPATH/bin/mobile-mcp-agent" || abort "! Missing agent binary for $ARCH"
 rm -f "$MODPATH"/bin/mobile-mcp-agent-*
+[ -f "$MODPATH/lib/input-server.jar" ] || abort "! Missing input server"
 
 mkdir -p "$DATA_DIR"
 chmod 700 "$DATA_DIR"

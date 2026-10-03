@@ -4,6 +4,8 @@
 //
 // Every operation is a fixed command executed as root with an explicit argv
 // (never through a shell), so request parameters cannot inject commands.
+// Touch, key and text input go to a long-running InputServer (app_process)
+// instead of the `input` command, see inputserver.go.
 package main
 
 import (
@@ -41,7 +43,6 @@ const (
 	maxApkBody     = 2 << 30
 	tmpDir         = "/data/local/tmp"
 	uiDumpPath     = tmpDir + "/mobile-mcp-ui.xml"
-	devicekitPkg   = "com.mobilenext.devicekit"
 )
 
 var (
@@ -68,6 +69,7 @@ func badRequest(format string, args ...any) error {
 
 type agent struct {
 	token []byte
+	input inputInjector
 	// uiautomator can only run one dump at a time
 	uiMu sync.Mutex
 }
@@ -252,7 +254,7 @@ func (a *agent) tap(w http.ResponseWriter, r *http.Request) error {
 	if err := errors.Join(validateCoordinate("x", req.X), validateCoordinate("y", req.Y)); err != nil {
 		return err
 	}
-	if _, err := run(commandTimeout, "input", "tap", strconv.Itoa(req.X), strconv.Itoa(req.Y)); err != nil {
+	if err := a.input.call(commandTimeout, "tap", strconv.Itoa(req.X), strconv.Itoa(req.Y)); err != nil {
 		return err
 	}
 	ok(w)
@@ -277,7 +279,7 @@ func (a *agent) swipe(w http.ResponseWriter, r *http.Request) error {
 		return badRequest("invalid duration: %d", req.Duration)
 	}
 
-	_, err := run(commandTimeout+time.Duration(req.Duration)*time.Millisecond, "input", "swipe",
+	err := a.input.call(commandTimeout+time.Duration(req.Duration)*time.Millisecond, "swipe",
 		strconv.Itoa(req.X1), strconv.Itoa(req.Y1), strconv.Itoa(req.X2), strconv.Itoa(req.Y2), strconv.Itoa(req.Duration))
 	if err != nil {
 		return err
@@ -294,20 +296,11 @@ func (a *agent) key(w http.ResponseWriter, r *http.Request) error {
 	if !keycodeRe.MatchString(req.Key) {
 		return badRequest("invalid key: %q", req.Key)
 	}
-	if _, err := run(commandTimeout, "input", "keyevent", req.Key); err != nil {
+	if err := a.input.call(commandTimeout, "key", req.Key); err != nil {
 		return err
 	}
 	ok(w)
 	return nil
-}
-
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] > 0x7f {
-			return false
-		}
-	}
-	return true
 }
 
 func (a *agent) text(w http.ResponseWriter, r *http.Request) error {
@@ -320,28 +313,12 @@ func (a *agent) text(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 
-	if isASCII(req.Text) {
-		// argv is passed straight to `input`, no shell quoting needed
-		if _, err := run(commandTimeout, "input", "text", req.Text); err != nil {
-			return err
-		}
-		ok(w)
-		return nil
-	}
-
-	// `input text` only handles ascii; go through devicekit's clipboard if available
-	if _, err := run(commandTimeout, "pm", "path", devicekitPkg); err != nil {
-		return badRequest("Non-ASCII text is not supported on Android, please install mobilenext devicekit, see https://github.com/mobile-next/devicekit-android")
-	}
-
+	// base64 keeps spaces and newlines from splitting the protocol line; the
+	// server types what the keyboard map can produce and pastes the rest
 	encoded := base64.StdEncoding.EncodeToString([]byte(req.Text))
-	if _, err := run(commandTimeout, "am", "broadcast", "-a", "devicekit.clipboard.set", "-e", "encoding", "base64", "-e", "text", encoded, "-n", devicekitPkg+"/.ClipboardBroadcastReceiver"); err != nil {
+	if err := a.input.call(commandTimeout, "text", encoded); err != nil {
 		return err
 	}
-	if _, err := run(commandTimeout, "input", "keyevent", "KEYCODE_PASTE"); err != nil {
-		return err
-	}
-	_, _ = run(commandTimeout, "am", "broadcast", "-a", "devicekit.clipboard.clear", "-n", devicekitPkg+"/.ClipboardBroadcastReceiver")
 	ok(w)
 	return nil
 }
@@ -671,12 +648,23 @@ func (l *localFilterListener) isLocal(remote net.Addr) bool {
 	return false
 }
 
+// defaultInputServerJar is lib/input-server.jar next to the bin/ directory
+// holding the agent, which is how the module lays them out.
+func defaultInputServerJar() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "input-server.jar"
+	}
+	return filepath.Join(filepath.Dir(filepath.Dir(exe)), "lib", "input-server.jar")
+}
+
 func main() {
 	listen := flag.String("listen", "0.0.0.0:8765", "address to listen on")
 	tokenFile := flag.String("token-file", "/data/adb/mobile-mcp/token", "file holding the bearer token (created if missing)")
 	allowLocal := flag.Bool("allow-local", false, "accept connections from the device itself (loopback and its own IPs)")
 	printToken := flag.Bool("print-token", false, "print the token (creating it if needed) and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	inputJar := flag.String("input-server", defaultInputServerJar(), "dex jar of the InputServer run through app_process")
 	flag.Parse()
 
 	if *showVersion {
@@ -697,7 +685,7 @@ func main() {
 		os.Setenv("PATH", "/system/bin:/system/xbin:/vendor/bin")
 	}
 
-	a := &agent{token: []byte(token)}
+	a := &agent{token: []byte(token), input: newInputServer(*inputJar)}
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           a.routes(),

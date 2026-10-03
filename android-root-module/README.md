@@ -4,13 +4,16 @@ A Magisk / KernelSU / APatch module that lets mobile-mcp control a **rooted** An
 
 ```
 mobile-mcp (computer) ──HTTP + bearer token──▶ mobile-mcp-agent (phone, root)
-                                                  ├─ input tap/swipe/text/keyevent
+                                                  ├─ InputServer (app_process, stdin/stdout)
+                                                  │    └─ InputManager.injectInputEvent, clipboard
                                                   ├─ screencap -p
                                                   ├─ uiautomator dump
                                                   └─ pm / am / monkey / settings
 ```
 
 The agent is a small static Go binary started by the module's `service.sh` at boot. It runs as root, so it can use the same system tools adb shell would, but nothing on the device needs USB debugging or wireless debugging enabled, and no accessibility service is registered.
+
+Touch, key and text input do not go through the `input` command. On the first input request the agent starts `lib/input-server.jar` with `app_process` (the same way scrcpy runs its server) and keeps it alive. It injects events directly through `InputManager.injectInputEvent`, so each tap costs a pipe round trip instead of a JVM start. The agent talks to it over its stdin/stdout only, so no other process on the device can reach it. If it dies or stops answering, the agent restarts it on the next request.
 
 ## Install
 
@@ -66,7 +69,7 @@ Reboot, or disable and re-enable the module, after changing it. The agent logs t
 |---|---|
 | screenshots, screen size, tap / double tap / long press, swipe, type text, buttons, list elements, list / launch / terminate / install / uninstall apps, foreground app, open URL, orientation | logs, crash reports, screen recording, location, clipboard, fold, tap-by-ref |
 
-Non-ASCII text needs [devicekit](https://github.com/mobile-next/devicekit-android) installed, same as the adb path.
+Text that the virtual keyboard map can type (ASCII) is sent as key events. Any other text (Chinese, emoji, ...) is put on the clipboard, pasted with `KEYCODE_PASTE` and the clipboard is cleared afterwards. No helper app such as devicekit is needed.
 
 ## Security
 
@@ -75,7 +78,7 @@ Anyone who can reach the port **and** knows the token gets root-level control of
 - Traffic is plain HTTP. Use it only on a network you trust, or bind `LISTEN` to a VPN address (e.g. Tailscale / WireGuard), or tunnel it.
 - The token is 48 random hex characters, generated on first start and compared in constant time. To rotate it, delete `/data/adb/mobile-mcp/token` and reboot.
 - Connections from the device itself are dropped at accept time, before any HTTP is read (see `ALLOW_LOCAL`).
-- The agent only exposes fixed operations. Every parameter is validated and passed as a separate argv entry to the system tool, never through a shell, so there is no generic command execution endpoint.
+- The agent only exposes fixed operations. Every parameter is validated and passed as a separate argv entry to the system tool, never through a shell, so there is no generic command execution endpoint. The input server only accepts the fixed `tap` / `swipe` / `key` / `text` commands on its private stdin.
 
 ## HTTP API
 
@@ -106,4 +109,6 @@ cd android-root-module/agent
 go test ./...
 ```
 
-The tests replace the Android binaries with fake scripts on `PATH`, so they run on any Linux or macOS machine.
+The tests replace the Android binaries (and `app_process`) with fake scripts on `PATH`, so they run on any Linux or macOS machine.
+
+`build.sh` compiles `input-server/` with `javac` against the Android API 16 stubs and dexes it with d8. Both jars are downloaded from Maven once into `.cache/` and checked against pinned SHA-256 sums. Set `ANDROID_JAR` / `R8_JAR` to use local copies instead.

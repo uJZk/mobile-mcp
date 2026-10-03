@@ -20,7 +20,7 @@ func fakeCommands(t *testing.T, outputs map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "calls.log")
-	for _, name := range []string{"input", "wm", "pm", "am", "getprop", "screencap", "cmd", "monkey", "settings", "dumpsys"} {
+	for _, name := range []string{"wm", "pm", "am", "getprop", "screencap", "cmd", "monkey", "settings", "dumpsys"} {
 		script := "#!/bin/sh\necho \"" + name + " $*\" >> " + logPath + "\n"
 		if out, found := outputs[name]; found {
 			script += "printf '%s\\n' '" + out + "'\n"
@@ -42,24 +42,42 @@ func calls(t *testing.T, logPath string) []string {
 	return strings.Split(strings.TrimSpace(string(data)), "\n")
 }
 
+// fakeInput records the commands sent to the input server.
+type fakeInput struct{ calls []string }
+
+func (f *fakeInput) call(timeout time.Duration, args ...string) error {
+	f.calls = append(f.calls, strings.Join(args, " "))
+	return nil
+}
+
 func request(t *testing.T, method, path, body string, token string) *httptest.ResponseRecorder {
 	t.Helper()
-	a := &agent{token: []byte(testToken)}
+	rec, _ := requestWithInput(t, method, path, body, token)
+	return rec
+}
+
+func requestWithInput(t *testing.T, method, path, body string, token string) (*httptest.ResponseRecorder, *fakeInput) {
+	t.Helper()
+	input := &fakeInput{}
+	a := &agent{token: []byte(testToken), input: input}
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
 	a.routes().ServeHTTP(rec, req)
-	return rec
+	return rec, input
 }
 
 func TestRejectsMissingOrWrongToken(t *testing.T) {
 	logPath := fakeCommands(t, nil)
 	for _, token := range []string{"", "wrong-token-wrong-token"} {
-		rec := request(t, http.MethodPost, "/v1/input/tap", `{"x":1,"y":2}`, token)
+		rec, input := requestWithInput(t, http.MethodPost, "/v1/input/tap", `{"x":1,"y":2}`, token)
 		if rec.Code != http.StatusUnauthorized {
 			t.Fatalf("token %q: expected 401, got %d", token, rec.Code)
+		}
+		if len(input.calls) != 0 {
+			t.Fatalf("expected no input, got %v", input.calls)
 		}
 	}
 	if c := calls(t, logPath); len(c) != 0 {
@@ -67,25 +85,33 @@ func TestRejectsMissingOrWrongToken(t *testing.T) {
 	}
 }
 
-func TestTap(t *testing.T) {
+func TestInputCommands(t *testing.T) {
 	logPath := fakeCommands(t, nil)
-	rec := request(t, http.MethodPost, "/v1/input/tap", `{"x":100,"y":200}`, testToken)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	cases := []struct{ path, body, want string }{
+		{"/v1/input/tap", `{"x":100,"y":200}`, "tap 100 200"},
+		{"/v1/input/swipe", `{"x1":1,"y1":2,"x2":3,"y2":4,"duration":300}`, "swipe 1 2 3 4 300"},
+		{"/v1/input/key", `{"key":"KEYCODE_BACK"}`, "key KEYCODE_BACK"},
+		// base64 of "a b; rm -rf /\n你好"
+		{"/v1/input/text", `{"text":"a b; rm -rf /\n你好"}`, "text YSBiOyBybSAtcmYgLwrkvaDlpb0="},
 	}
-	if c := calls(t, logPath); len(c) != 1 || c[0] != "input tap 100 200" {
-		t.Fatalf("unexpected calls %v", c)
+	for _, tc := range cases {
+		rec, input := requestWithInput(t, http.MethodPost, tc.path, tc.body, testToken)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", tc.path, rec.Code, rec.Body)
+		}
+		if len(input.calls) != 1 || input.calls[0] != tc.want {
+			t.Fatalf("%s: unexpected input %v", tc.path, input.calls)
+		}
+	}
+	if c := calls(t, logPath); len(c) != 0 {
+		t.Fatalf("expected no commands, got %v", c)
 	}
 }
 
-func TestTextIsPassedAsSingleArgument(t *testing.T) {
-	logPath := fakeCommands(t, nil)
-	rec := request(t, http.MethodPost, "/v1/input/text", `{"text":"a b; rm -rf /"}`, testToken)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
-	}
-	if c := calls(t, logPath); len(c) != 1 || c[0] != "input text a b; rm -rf /" {
-		t.Fatalf("unexpected calls %v", c)
+func TestEmptyTextSendsNothing(t *testing.T) {
+	rec, input := requestWithInput(t, http.MethodPost, "/v1/input/text", `{"text":""}`, testToken)
+	if rec.Code != http.StatusOK || len(input.calls) != 0 {
+		t.Fatalf("unexpected %d %v", rec.Code, input.calls)
 	}
 }
 
@@ -100,9 +126,12 @@ func TestRejectsInvalidInput(t *testing.T) {
 		{"/v1/input/swipe", `{"x1":1,"y1":2,"x2":3,"y2":4,"duration":0}`},
 	}
 	for _, tc := range cases {
-		rec := request(t, http.MethodPost, tc.path, tc.body, testToken)
+		rec, input := requestWithInput(t, http.MethodPost, tc.path, tc.body, testToken)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("%s %s: expected 400, got %d", tc.path, tc.body, rec.Code)
+		}
+		if len(input.calls) != 0 {
+			t.Fatalf("%s %s: expected no input, got %v", tc.path, tc.body, input.calls)
 		}
 	}
 	if c := calls(t, logPath); len(c) != 0 {
