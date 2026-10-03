@@ -1,6 +1,7 @@
 package com.mobilenext.mcp;
 
 import android.content.ClipData;
+import android.content.res.Resources;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -45,9 +46,15 @@ public final class InputServer {
 	// KeyEvent.KEYCODE_PASTE (API 24), not in the API 16 stubs we compile against
 	private static final int KEYCODE_PASTE = 279;
 
-	// a real fingertip never lands on the exact same pixel twice or holds
-	// perfectly still, so touch points get a small random offset
-	private static final float JITTER_PX = 2.0f;
+	// a real fingertip never lands on the exact same spot twice or holds perfectly
+	// still; ~1.2mm of wobble is a realistic contact-point repeatability for a finger,
+	// converted to pixels for this screen's density (a flat px constant would be
+	// unrealistically tiny on a high-density phone and too coarse on a low-density one)
+	private static final float JITTER_MM = 1.2f;
+	private static final float MM_PER_INCH = 25.4f;
+	// densityDpi is occasionally reported as 0 on odd devices/emulators; fall back
+	// to a common phone density (~420dpi) rather than collapsing jitter to 0
+	private static final int FALLBACK_DENSITY_DPI = 420;
 
 	// a pressure-sensitive screen reports a continuous AXIS_PRESSURE range; emulate
 	// the natural variance of a fingertip instead of the constant 1.0 used otherwise
@@ -59,6 +66,7 @@ public final class InputServer {
 	private final KeyCharacterMap keyCharacterMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
 	private Object clipboard;
 	private Boolean pressureSensitive;
+	private static Float jitterPxCache;
 
 	private InputServer() throws ReflectiveOperationException {
 		Class<?> cls;
@@ -187,7 +195,23 @@ public final class InputServer {
 	}
 
 	private static float jitter(float value) {
-		return value + (ThreadLocalRandom.current().nextFloat() * 2f - 1f) * JITTER_PX;
+		return value + (ThreadLocalRandom.current().nextFloat() * 2f - 1f) * jitterPx();
+	}
+
+	private static float jitterPx() {
+		if (jitterPxCache == null) {
+			int dpi;
+			try {
+				dpi = Resources.getSystem().getDisplayMetrics().densityDpi;
+			} catch (Throwable ignored) {
+				dpi = 0;
+			}
+			if (dpi <= 0) {
+				dpi = FALLBACK_DENSITY_DPI;
+			}
+			jitterPxCache = (dpi / MM_PER_INCH) * JITTER_MM;
+		}
+		return jitterPxCache;
 	}
 
 	// AXIS_PRESSURE on a plain touchscreen is just 0/1 "touching or not"; a genuinely
