@@ -1,6 +1,7 @@
 package com.mobilenext.mcp;
 
 import android.content.ClipData;
+import android.content.res.Resources;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -17,11 +18,16 @@ import java.io.PrintStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Long-running input injector started by mobile-mcp-agent through app_process
  * (as root). It injects events straight into InputManager, the same way the
  * `input` command does, but stays alive so each request skips the JVM start.
+ *
+ * Touch points carry a small random position jitter and, on devices whose
+ * touchscreen reports a real AXIS_PRESSURE range, a randomized pressure value,
+ * so injected touches read more like a human fingertip than a fixed robot click.
  *
  * Protocol: one command per line on stdin, one reply per line on stdout,
  * either "ok" or "error <message>". Text arguments are base64 encoded.
@@ -40,10 +46,29 @@ public final class InputServer {
 	// KeyEvent.KEYCODE_PASTE (API 24), not in the API 16 stubs we compile against
 	private static final int KEYCODE_PASTE = 279;
 
+	// a real fingertip never lands on the exact same spot twice or holds perfectly
+	// still; ~1.2mm of wobble is a realistic contact-point repeatability for a finger,
+	// converted to pixels for this screen's density (a flat px constant would be
+	// unrealistically tiny on a high-density phone and too coarse on a low-density one)
+	private static final float JITTER_MM = 1.2f;
+	// a finger sliding mid-swipe wanders more than one held still for a tap/press
+	private static final float SWIPE_MOVE_JITTER_SCALE = 2.5f;
+	private static final float MM_PER_INCH = 25.4f;
+	// densityDpi is occasionally reported as 0 on odd devices/emulators; fall back
+	// to a common phone density (~420dpi) rather than collapsing jitter to 0
+	private static final int FALLBACK_DENSITY_DPI = 420;
+
+	// a pressure-sensitive screen reports a continuous AXIS_PRESSURE range; emulate
+	// the natural variance of a fingertip instead of the constant 1.0 used otherwise
+	private static final float PRESSURE_MIN = 0.55f;
+	private static final float PRESSURE_MAX = 1.0f;
+
 	private final Object inputManager;
 	private final Method injectInputEvent;
 	private final KeyCharacterMap keyCharacterMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
 	private Object clipboard;
+	private Boolean pressureSensitive;
+	private static Float jitterPxCache;
 
 	private InputServer() throws ReflectiveOperationException {
 		Class<?> cls;
@@ -134,7 +159,8 @@ public final class InputServer {
 	}
 
 	private void touch(int action, long downTime, float x, float y) throws ReflectiveOperationException {
-		MotionEvent event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, y, 1.0f, 1.0f, 0, 1.0f, 1.0f, 0, 0);
+		float pressure = action == MotionEvent.ACTION_UP ? 0.0f : simulatedPressure();
+		MotionEvent event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, x, y, pressure, 1.0f, 0, 1.0f, 1.0f, 0, 0);
 		event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
 		try {
 			inject(event);
@@ -145,28 +171,81 @@ public final class InputServer {
 
 	private void tap(int x, int y) throws ReflectiveOperationException {
 		long downTime = SystemClock.uptimeMillis();
-		touch(MotionEvent.ACTION_DOWN, downTime, x, y);
-		touch(MotionEvent.ACTION_UP, downTime, x, y);
+		touch(MotionEvent.ACTION_DOWN, downTime, jitter(x), jitter(y));
+		touch(MotionEvent.ACTION_UP, downTime, jitter(x), jitter(y));
 	}
 
 	private void swipe(int x1, int y1, int x2, int y2, long duration) throws ReflectiveOperationException, InterruptedException {
 		long downTime = SystemClock.uptimeMillis();
 		long endTime = downTime + duration;
-		touch(MotionEvent.ACTION_DOWN, downTime, x1, y1);
+		touch(MotionEvent.ACTION_DOWN, downTime, jitter(x1), jitter(y1));
 
 		long now;
 		while ((now = SystemClock.uptimeMillis()) < endTime) {
 			float alpha = (float) (now - downTime) / duration;
-			touch(MotionEvent.ACTION_MOVE, downTime, lerp(x1, x2, alpha), lerp(y1, y2, alpha));
+			touch(MotionEvent.ACTION_MOVE, downTime,
+					jitter(lerp(x1, x2, alpha), SWIPE_MOVE_JITTER_SCALE),
+					jitter(lerp(y1, y2, alpha), SWIPE_MOVE_JITTER_SCALE));
 			Thread.sleep(Math.min(SWIPE_STEP_MS, Math.max(1, endTime - SystemClock.uptimeMillis())));
 		}
 
-		touch(MotionEvent.ACTION_MOVE, downTime, x2, y2);
-		touch(MotionEvent.ACTION_UP, downTime, x2, y2);
+		touch(MotionEvent.ACTION_MOVE, downTime, jitter(x2), jitter(y2));
+		touch(MotionEvent.ACTION_UP, downTime, jitter(x2), jitter(y2));
 	}
 
 	private static float lerp(float a, float b, float alpha) {
 		return a + (b - a) * alpha;
+	}
+
+	private static float jitter(float value) {
+		return jitter(value, 1f);
+	}
+
+	private static float jitter(float value, float scale) {
+		return value + (ThreadLocalRandom.current().nextFloat() * 2f - 1f) * jitterPx() * scale;
+	}
+
+	private static float jitterPx() {
+		if (jitterPxCache == null) {
+			int dpi;
+			try {
+				dpi = Resources.getSystem().getDisplayMetrics().densityDpi;
+			} catch (Throwable ignored) {
+				dpi = 0;
+			}
+			if (dpi <= 0) {
+				dpi = FALLBACK_DENSITY_DPI;
+			}
+			jitterPxCache = (dpi / MM_PER_INCH) * JITTER_MM;
+		}
+		return jitterPxCache;
+	}
+
+	// AXIS_PRESSURE on a plain touchscreen is just 0/1 "touching or not"; a genuinely
+	// pressure-sensitive one reports a wider range, which we take as the signal to simulate
+	private boolean isPressureSensitive() {
+		if (pressureSensitive == null) {
+			pressureSensitive = false;
+			for (int id : InputDevice.getDeviceIds()) {
+				InputDevice device = InputDevice.getDevice(id);
+				if (device == null || (device.getSources() & InputDevice.SOURCE_TOUCHSCREEN) == 0) {
+					continue;
+				}
+				InputDevice.MotionRange range = device.getMotionRange(MotionEvent.AXIS_PRESSURE);
+				if (range != null && range.getRange() > 1.0f) {
+					pressureSensitive = true;
+					break;
+				}
+			}
+		}
+		return pressureSensitive;
+	}
+
+	private float simulatedPressure() {
+		if (!isPressureSensitive()) {
+			return 1.0f;
+		}
+		return PRESSURE_MIN + ThreadLocalRandom.current().nextFloat() * (PRESSURE_MAX - PRESSURE_MIN);
 	}
 
 	private void key(String name) throws ReflectiveOperationException {
