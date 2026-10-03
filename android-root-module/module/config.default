@@ -1,0 +1,7 @@
+# mobile-mcp agent configuration, read at boot by the module's service.sh.
+# Edit /data/adb/mobile-mcp/config (not this file) and reboot to apply.
+
+# Address the agent listens on. Anyone who can reach this port and knows the
+# token has full root control of the device; bind to a specific interface
+# (e.g. a VPN address) if your network is not trusted.
+LISTEN=0.0.0.0:8765

@@ -8,6 +8,7 @@ import { ChildProcess } from "node:child_process";
 
 import { error, trace } from "./logger";
 import { AndroidRobot, AndroidDeviceManager } from "./android";
+import { AndroidRootManager, isAndroidRootDeviceId } from "./android-root";
 import { ActionableError, Dimensions, Robot, ScreenshotOptions } from "./robot";
 import { IosManager, IosRobot } from "./ios";
 import { PNG } from "./png";
@@ -215,6 +216,7 @@ export const createMcpServer = (): McpServer => {
 	const mobilecli = new Mobilecli();
 	const activeRecordings = new Map<string, ActiveRecording>();
 	const agentVerifiedSimulators = new Set<string>();
+	const androidRootManager = new AndroidRootManager();
 	const activeLoginProcesses: ChildProcess[] = [];
 	posthog("launch", {}).then();
 
@@ -244,6 +246,11 @@ export const createMcpServer = (): McpServer => {
 	};
 
 	const createRobotFromDevice = (deviceId: string): Robot => {
+
+		// rooted android devices are driven over http by the root module's agent, no mobilecli or adb needed
+		if (isAndroidRootDeviceId(deviceId)) {
+			return androidRootManager.getRobot(deviceId);
+		}
 
 		// from now on, we must have mobilecli working
 		ensureMobilecliAvailable();
@@ -304,10 +311,23 @@ export const createMcpServer = (): McpServer => {
 		{ readOnlyHint: true, openWorldHint: false },
 		async ({}, telemetry) => {
 
-			// from today onward, we must have mobilecli working
-			ensureMobilecliAvailable();
+			const rootDevices = await androidRootManager.listDevices();
+			telemetry.AndroidRootCount = rootDevices.filter(device => device.state === "online").length;
 
-			const devices: MobilecliDevice[] = [];
+			// root module devices work without mobilecli, so only require it when there are none
+			if (rootDevices.length > 0) {
+				try {
+					ensureMobilecliAvailable();
+				} catch (error: any) {
+					const out: MobilecliDevicesResponse = { devices: rootDevices };
+					return JSON.stringify(out);
+				}
+			} else {
+				// from today onward, we must have mobilecli working
+				ensureMobilecliAvailable();
+			}
+
+			const devices: MobilecliDevice[] = [...rootDevices];
 			const legacyRobot = process.env.MOBILEMCP_LEGACY_ROBOT === "1";
 
 			if (legacyRobot) {

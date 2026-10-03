@@ -508,6 +508,8 @@ Gmail to contacts "team@example.com".
 | `MOBILEMCP_DISABLE_TELEMETRY` | Disable anonymous usage telemetry. | `MOBILEMCP_DISABLE_TELEMETRY=1` |
 | `MOBILEMCP_ALLOW_UNSAFE_URLS` | Allow `mobile_open_url` to open non-standard URL schemes (blocked by default). | `MOBILEMCP_ALLOW_UNSAFE_URLS=1` |
 | `MOBILEMCP_LEGACY_ROBOT` | Use the legacy platform-specific robots for Android devices and physical iOS devices. iOS simulators continue to use `mobilecli`. | `MOBILEMCP_LEGACY_ROBOT=1` |
+| `MOBILEMCP_ANDROID_ROOT_DEVICES` | Rooted Android devices to drive through the [root module](android-root-module/README.md) instead of adb, as comma separated `[token@]host[:port]` entries (default port 8765). | `MOBILEMCP_ANDROID_ROOT_DEVICES=192.168.1.20` |
+| `MOBILEMCP_ANDROID_ROOT_TOKEN` | Token for root module devices that don't specify one. Printed when the module is installed. | `MOBILEMCP_ANDROID_ROOT_TOKEN=3f9a...` |
 
 ### Simulators, Emulators, and Real Devices
 
@@ -517,6 +519,10 @@ When launched, Mobile MCP can connect to:
 - iOS or Android real devices (requires proper platform tools and drivers)
 
 Make sure you have your mobile platform SDKs (Xcode, Android SDK) installed and configured properly before running Mobile Next Mobile MCP.
+
+### Rooted Android without adb or accessibility
+
+Rooted Android devices (Magisk, KernelSU or APatch) can be controlled over the network with no adb connection and no accessibility service: flash the module from [`android-root-module`](android-root-module/README.md), then point `MOBILEMCP_ANDROID_ROOT_DEVICES` and `MOBILEMCP_ANDROID_ROOT_TOKEN` at the device. It shows up in `mobile_list_available_devices` as `root:<host>:<port>`.
 
 ### Telemetry
 

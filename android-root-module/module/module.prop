@@ -1,0 +1,6 @@
+id=mobile-mcp-agent
+name=Mobile MCP Agent
+version=v0.1.0
+versionCode=1
+author=mobile-next
+description=Lets mobile-mcp control this device over the network as root, without adb and without an accessibility service.

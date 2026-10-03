@@ -507,6 +507,8 @@ Gmail to contacts "team@example.com".
 | `MOBILEMCP_DISABLE_TELEMETRY` | 关闭匿名使用情况遥测。 | `MOBILEMCP_DISABLE_TELEMETRY=1` |
 | `MOBILEMCP_ALLOW_UNSAFE_URLS` | 允许 `mobile_open_url` 打开非标准的 URL scheme（默认被阻止）。 | `MOBILEMCP_ALLOW_UNSAFE_URLS=1` |
 | `MOBILEMCP_LEGACY_ROBOT` | 对 Android 设备和 iOS 真机使用旧版的平台专用 robot。iOS 模拟器仍然使用 `mobilecli`。 | `MOBILEMCP_LEGACY_ROBOT=1` |
+| `MOBILEMCP_ANDROID_ROOT_DEVICES` | 通过 [root 模块](android-root-module/README.md)（而不是 adb）控制的已 root Android 设备，格式为逗号分隔的 `[token@]host[:port]`（默认端口 8765）。 | `MOBILEMCP_ANDROID_ROOT_DEVICES=192.168.1.20` |
+| `MOBILEMCP_ANDROID_ROOT_TOKEN` | 未单独指定 token 的 root 模块设备所用的 token，安装模块时会打印出来。 | `MOBILEMCP_ANDROID_ROOT_TOKEN=3f9a...` |
 
 ### 模拟器、仿真器与真机
 
@@ -516,6 +518,10 @@ Gmail to contacts "team@example.com".
 - iOS 或 Android 真机（需要相应的平台工具和驱动）
 
 在运行 Mobile Next Mobile MCP 之前，请确保已正确安装并配置移动平台 SDK（Xcode、Android SDK）。
+
+### 无需 adb 和无障碍服务的已 root Android 设备
+
+已 root 的 Android 设备（Magisk、KernelSU 或 APatch）可以通过网络控制，不需要 adb 连接，也不需要无障碍服务：刷入 [`android-root-module`](android-root-module/README.md) 中的模块，然后设置 `MOBILEMCP_ANDROID_ROOT_DEVICES` 和 `MOBILEMCP_ANDROID_ROOT_TOKEN` 指向该设备即可。设备会以 `root:<host>:<port>` 的形式出现在 `mobile_list_available_devices` 中。
 
 ### 遥测
 
