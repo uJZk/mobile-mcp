@@ -189,9 +189,8 @@ public final class InputServer {
 			Thread.sleep(Math.min(SWIPE_STEP_MS, Math.max(1, endTime - SystemClock.uptimeMillis())));
 		}
 
-		// land exactly on the requested target, jitter only applies along the way
-		touch(MotionEvent.ACTION_MOVE, downTime, x2, y2);
-		touch(MotionEvent.ACTION_UP, downTime, x2, y2);
+		touch(MotionEvent.ACTION_MOVE, downTime, jitter(x2), jitter(y2));
+		touch(MotionEvent.ACTION_UP, downTime, jitter(x2), jitter(y2));
 	}
 
 	private static float lerp(float a, float b, float alpha) {
