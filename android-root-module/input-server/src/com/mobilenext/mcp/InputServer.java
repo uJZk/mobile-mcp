@@ -51,6 +51,8 @@ public final class InputServer {
 	// converted to pixels for this screen's density (a flat px constant would be
 	// unrealistically tiny on a high-density phone and too coarse on a low-density one)
 	private static final float JITTER_MM = 1.2f;
+	// a finger sliding mid-swipe wanders more than one held still for a tap/press
+	private static final float SWIPE_MOVE_JITTER_SCALE = 2.5f;
 	private static final float MM_PER_INCH = 25.4f;
 	// densityDpi is occasionally reported as 0 on odd devices/emulators; fall back
 	// to a common phone density (~420dpi) rather than collapsing jitter to 0
@@ -181,7 +183,9 @@ public final class InputServer {
 		long now;
 		while ((now = SystemClock.uptimeMillis()) < endTime) {
 			float alpha = (float) (now - downTime) / duration;
-			touch(MotionEvent.ACTION_MOVE, downTime, jitter(lerp(x1, x2, alpha)), jitter(lerp(y1, y2, alpha)));
+			touch(MotionEvent.ACTION_MOVE, downTime,
+					jitter(lerp(x1, x2, alpha), SWIPE_MOVE_JITTER_SCALE),
+					jitter(lerp(y1, y2, alpha), SWIPE_MOVE_JITTER_SCALE));
 			Thread.sleep(Math.min(SWIPE_STEP_MS, Math.max(1, endTime - SystemClock.uptimeMillis())));
 		}
 
@@ -195,7 +199,11 @@ public final class InputServer {
 	}
 
 	private static float jitter(float value) {
-		return value + (ThreadLocalRandom.current().nextFloat() * 2f - 1f) * jitterPx();
+		return jitter(value, 1f);
+	}
+
+	private static float jitter(float value, float scale) {
+		return value + (ThreadLocalRandom.current().nextFloat() * 2f - 1f) * jitterPx() * scale;
 	}
 
 	private static float jitterPx() {
