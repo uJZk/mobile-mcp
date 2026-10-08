@@ -9,3 +9,4 @@ playwright-report
 plugin/.claude-plugin/types
 
 todo.md
+!docs/todo.md
